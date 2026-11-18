@@ -321,6 +321,17 @@ async function startServer() {
     res.json(readHistory());
   });
 
+  app.post('/api/history', (req, res) => {
+    const entry = req.body;
+    if (!entry || typeof entry !== 'object') {
+      res.status(400).json({ error: 'Invalid history entry.' });
+      return;
+    }
+    const updated = [entry as ClassificationHistoryEntry, ...readHistory()].slice(0, 60);
+    writeHistory(updated);
+    res.json(entry);
+  });
+
   app.delete('/api/history/:id', (req, res) => {
     const id = req.params.id;
     const updated = readHistory().filter((entry) => entry.id !== id);
@@ -353,6 +364,13 @@ async function startServer() {
       const cleanBase64 = dataUrlMatch?.[2] || imageBase64;
 
       const configuredPythonUrl = process.env.PYTHON_API_URL?.trim();
+      const apiKey = process.env.GEMINI_API_KEY?.trim();
+
+      if (!configuredPythonUrl && (!apiKey || apiKey === 'MY_GEMINI_API_KEY')) {
+        res.status(200).json({ useClientCnn: true });
+        return;
+      }
+
       const result = configuredPythonUrl
         ? await classifyWithPythonApi(configuredPythonUrl, cleanBase64, resolvedMime)
         : await classifyWithGemini(cleanBase64, resolvedMime);

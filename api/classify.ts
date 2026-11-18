@@ -242,10 +242,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     } else {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        res.status(500).json({
-          error:
-            'GEMINI_API_KEY is not configured. Add GEMINI_API_KEY in Vercel Project Settings > Environment Variables and redeploy.',
-        });
+        res.status(200).json({ useClientCnn: true });
         return;
       }
 

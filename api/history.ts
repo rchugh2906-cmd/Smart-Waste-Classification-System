@@ -3,6 +3,7 @@ import path from 'node:path';
 
 interface ApiRequest {
   method?: string;
+  body?: unknown;
   query?: Record<string, string | string[] | undefined>;
   url?: string;
 }
@@ -39,6 +40,23 @@ export default function handler(req: ApiRequest, res: ApiResponse) {
   if (method === 'GET') {
     res.status(200).json(readHistory());
     return;
+  }
+
+  if (method === 'POST') {
+    try {
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+      if (body && typeof body === 'object') {
+        const updated = [body, ...readHistory()].slice(0, 60);
+        writeHistory(updated);
+        res.status(200).json(body);
+        return;
+      }
+      res.status(400).json({ error: 'Invalid history entry.' });
+      return;
+    } catch {
+      res.status(400).json({ error: 'Invalid JSON payload.' });
+      return;
+    }
   }
 
   if (method === 'DELETE') {

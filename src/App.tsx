@@ -7,6 +7,7 @@ import type {
   ClassificationResult,
   InputSource,
 } from './types/waste.ts';
+import { classifyWithBrowserCnn } from './utils/cnnClassifier.ts';
 import type { PreparedImage } from './utils/imageHelpers.ts';
 
 const LOCAL_HISTORY_KEY = 'ecosort_history_cache_v1';
@@ -89,48 +90,81 @@ export default function App() {
     };
   }, []);
 
-  const classifyImage = useCallback(async (image: PreparedImage, source: InputSource) => {
-    setIsClassifying(true);
-    setError(null);
-
-    try {
-      const res = await fetch('/api/classify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: image.dataUrl,
-          mimeType: image.mimeType,
-          source,
-          imageName: image.fileName,
-          thumbnailDataUrl: image.thumbnailDataUrl,
-        }),
+  const recordHistoryEntry = useCallback(
+    (entry: ClassificationHistoryEntry, syncToBackend: boolean) => {
+      setHistory((prev) => {
+        const next = [entry, ...prev].slice(0, 60);
+        writeLocalHistory(next);
+        return next;
       });
-
-      const payload = await parseApiJson<{
-        result?: ClassificationResult;
-        entry?: ClassificationHistoryEntry;
-        error?: string;
-      }>(res);
-
-      if (!res.ok || !payload.result) {
-        throw new Error(payload?.error || `Classification failed (HTTP ${res.status})`);
+      if (syncToBackend) {
+        fetch('/api/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(entry),
+        }).catch(() => {});
       }
+    },
+    []
+  );
 
-      setResult(payload.result);
-      if (payload.entry) {
-        setHistory((prev) => {
-          const next = [payload.entry!, ...prev].slice(0, 60);
-          writeLocalHistory(next);
-          return next;
+  const classifyImage = useCallback(
+    async (image: PreparedImage, source: InputSource) => {
+      setIsClassifying(true);
+      setError(null);
+
+      try {
+        const res = await fetch('/api/classify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageBase64: image.dataUrl,
+            mimeType: image.mimeType,
+            source,
+            imageName: image.fileName,
+            thumbnailDataUrl: image.thumbnailDataUrl,
+          }),
         });
+
+        const payload = await parseApiJson<{
+          useClientCnn?: boolean;
+          result?: ClassificationResult;
+          entry?: ClassificationHistoryEntry;
+          error?: string;
+        }>(res);
+
+        if (res.ok && payload.useClientCnn) {
+          const cnnResult = await classifyWithBrowserCnn(image.dataUrl);
+          const entry: ClassificationHistoryEntry = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            timestamp: new Date().toISOString(),
+            source,
+            imageName: image.fileName,
+            thumbnailDataUrl: image.thumbnailDataUrl,
+            result: cnnResult,
+          };
+          setResult(cnnResult);
+          recordHistoryEntry(entry, true);
+          return;
+        }
+
+        if (!res.ok || !payload.result) {
+          throw new Error(payload?.error || `Classification failed (HTTP ${res.status})`);
+        }
+
+        setResult(payload.result);
+        if (payload.entry) {
+          recordHistoryEntry(payload.entry, false);
+        }
+      } catch (err) {
+        setResult(null);
+        setError(err instanceof Error ? err.message : 'Unable to classify waste image.');
+      } finally {
+        setIsClassifying(false);
       }
-    } catch (err) {
-      setResult(null);
-      setError(err instanceof Error ? err.message : 'Unable to classify waste image.');
-    } finally {
-      setIsClassifying(false);
-    }
-  }, []);
+    },
+    [recordHistoryEntry]
+  );
 
   const handleImageSelected = (
     image: PreparedImage,
