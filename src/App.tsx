@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ClassifierWorkspace } from './components/ClassifierWorkspace.tsx';
 import { HistoryTable } from './components/HistoryTable.tsx';
 import { TopNav } from './components/TopNav.tsx';
@@ -7,7 +7,7 @@ import type {
   ClassificationResult,
   InputSource,
 } from './types/waste.ts';
-import { classifyWithBrowserCnn } from './utils/cnnClassifier.ts';
+import { classifyWithBrowserCnn, preloadBrowserCnn } from './utils/cnnClassifier.ts';
 import type { PreparedImage } from './utils/imageHelpers.ts';
 
 const LOCAL_HISTORY_KEY = 'ecosort_history_cache_v1';
@@ -65,9 +65,22 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<ClassificationHistoryEntry[]>(readLocalHistory);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     let active = true;
+
+    fetch('/api/health')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((info) => {
+        if (active && info && info.serverClassifierReady === false) {
+          preloadBrowserCnn();
+        }
+      })
+      .catch(() => {
+        if (active) preloadBrowserCnn();
+      });
+
     fetch('/api/history')
       .then(async (res) => (res.ok ? parseApiJson<ClassificationHistoryEntry[]>(res) : []))
       .then((serverRows) => {
@@ -85,6 +98,7 @@ export default function App() {
       .finally(() => {
         if (active) setHistoryLoading(false);
       });
+
     return () => {
       active = false;
     };
@@ -110,6 +124,7 @@ export default function App() {
 
   const classifyImage = useCallback(
     async (image: PreparedImage, source: InputSource) => {
+      const requestId = ++requestIdRef.current;
       setIsClassifying(true);
       setError(null);
 
@@ -133,8 +148,12 @@ export default function App() {
           error?: string;
         }>(res);
 
+        if (requestId !== requestIdRef.current) return;
+
         if (res.ok && payload.useClientCnn) {
           const cnnResult = await classifyWithBrowserCnn(image.dataUrl);
+          if (requestId !== requestIdRef.current) return;
+
           const entry: ClassificationHistoryEntry = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
@@ -157,10 +176,13 @@ export default function App() {
           recordHistoryEntry(payload.entry, false);
         }
       } catch (err) {
+        if (requestId !== requestIdRef.current) return;
         setResult(null);
         setError(err instanceof Error ? err.message : 'Unable to classify waste image.');
       } finally {
-        setIsClassifying(false);
+        if (requestId === requestIdRef.current) {
+          setIsClassifying(false);
+        }
       }
     },
     [recordHistoryEntry]
@@ -181,6 +203,8 @@ export default function App() {
   };
 
   const handleClearImage = () => {
+    requestIdRef.current++;
+    setIsClassifying(false);
     setSelectedImage(null);
     setResult(null);
     setError(null);
@@ -197,6 +221,8 @@ export default function App() {
   };
 
   const handleInspectHistoryEntry = (entry: ClassificationHistoryEntry) => {
+    requestIdRef.current++;
+    setIsClassifying(false);
     setMode('upload');
     setSelectedSource(entry.source);
     setSelectedImage({

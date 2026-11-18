@@ -19,7 +19,7 @@ async function getMobileNetModel(): Promise<MobileNetModel> {
   if (!modelPromise) {
     modelPromise = (async () => {
       const tf = await import('@tensorflow/tfjs');
-      // Use CPU backend to avoid WebGL vertex/fragment shader linking errors across browsers/GPUs
+      // Always use CPU backend to eliminate WebGL shader compilation/linking errors
       await tf.setBackend('cpu');
       await tf.ready();
       const mobilenet = await import('@tensorflow-models/mobilenet');
@@ -32,12 +32,36 @@ async function getMobileNetModel(): Promise<MobileNetModel> {
   return modelPromise;
 }
 
+export function preloadBrowserCnn(): void {
+  void getMobileNetModel().catch(() => {
+    // Will surface error only if user triggers inference and network is offline
+  });
+}
+
 interface MaterialCues {
   kraftBrown: number;
   brightPaper: number;
   metallicSheen: number;
   glassTint: number;
   polymerSaturated: number;
+}
+
+function createCenterCropCanvas(img: HTMLImageElement, cropFraction = 0.72): HTMLCanvasElement {
+  const srcW = img.naturalWidth || img.width || 224;
+  const srcH = img.naturalHeight || img.height || 224;
+  const cropW = Math.max(32, Math.round(srcW * cropFraction));
+  const cropH = Math.max(32, Math.round(srcH * cropFraction));
+  const sx = Math.round((srcW - cropW) / 2);
+  const sy = Math.round((srcH - cropH) / 2);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 224;
+  canvas.height = 224;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, 224, 224);
+  }
+  return canvas;
 }
 
 function analyzeMaterialCues(img: HTMLImageElement): MaterialCues {
@@ -62,7 +86,6 @@ function analyzeMaterialCues(img: HTMLImageElement): MaterialCues {
   let saturated = 0;
   let samples = 0;
 
-  // Focus on central 60% subject region
   const start = 12;
   const end = 52;
   for (let y = start; y < end; y++) {
@@ -77,29 +100,24 @@ function analyzeMaterialCues(img: HTMLImageElement): MaterialCues {
       const lum = 0.299 * r + 0.587 * g + 0.114 * b;
       samples++;
 
-      // Warm kraft cardboard brown (R > G > B)
-      if (r > g && g > b && r - b >= 24 && r >= 105 && r <= 220 && g >= 75 && g <= 180) {
+      if (r > g && g > b && r - b >= 24 && r >= 100 && r <= 225 && g >= 70 && g <= 185) {
         kraft++;
       }
 
-      // Crisp white / bright matte paper
       if (min > 185 && spread < 24) {
         paper++;
       }
 
-      // Neutral metallic grayscale contrast
       if (spread < 22) {
         if (lum < 95) neutralDark++;
         else if (lum > 205) neutralBright++;
         else neutralMid++;
       }
 
-      // Subtle green/aqua soda-lime glass refraction
       if (g >= r - 2 && b >= r - 4 && spread >= 6 && spread <= 36 && lum > 110) {
         glassCool++;
       }
 
-      // Saturated polymer labels/caps
       if (spread > 55 && !(r > g && g > b && r - b < 65)) {
         saturated++;
       }
@@ -109,15 +127,15 @@ function analyzeMaterialCues(img: HTMLImageElement): MaterialCues {
   const kraftRatio = kraft / samples;
   const paperRatio = paper / samples;
   const metallicContrast =
-    neutralMid / samples > 0.15
+    neutralMid / samples > 0.14
       ? Math.min(1, ((neutralDark / samples) * 3.5 + (neutralBright / samples) * 3.5) / 2)
       : 0;
 
   return {
-    kraftBrown: Math.min(1, kraftRatio * 3.2),
+    kraftBrown: Math.min(1, kraftRatio * 3.4),
     brightPaper: Math.min(1, paperRatio * 2.2),
     metallicSheen: metallicContrast,
-    glassTint: Math.min(1, (glassCool / samples) * 3.0),
+    glassTint: Math.min(1, (glassCool / samples) * 3.1),
     polymerSaturated: Math.min(1, (saturated / samples) * 3.5),
   };
 }
@@ -137,7 +155,7 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'chopping board',
       'box',
     ],
-    weight: 1.35,
+    weight: 1.4,
   },
   {
     category: 'glass',
@@ -158,9 +176,11 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'cocktail shaker',
       'carafe',
       'saltshaker',
+      'whiskey jug',
+      'red wine',
       'glass',
     ],
-    weight: 1.35,
+    weight: 1.4,
   },
   {
     category: 'metal',
@@ -185,6 +205,7 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'bucket',
       'pail',
       'barrel',
+      'steel drum',
       'iron',
       'aluminum',
       'steel',
@@ -194,12 +215,16 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'wrench',
       'screw',
       'nail',
+      'padlock',
       'lock',
       'whistle',
       'pot',
       'toaster',
+      'waffle iron',
+      'cleaver',
+      'thimble',
     ],
-    weight: 1.3,
+    weight: 1.35,
   },
   {
     category: 'paper',
@@ -223,7 +248,7 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'book',
       'paper',
     ],
-    weight: 1.3,
+    weight: 1.35,
   },
   {
     category: 'plastic',
@@ -237,6 +262,7 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'lotion',
       'shampoo',
       'detergent',
+      'sunscreen',
       'toothbrush',
       'hair spray',
       'syringe',
@@ -249,37 +275,58 @@ const KEYWORD_RULES: Array<{ category: TrashNetClass; keywords: string[]; weight
       'spatula',
       'cup',
       'sunglasses',
-      'pen',
+      'sunglass',
+      'ballpoint',
+      'fountain pen',
+      'rule',
       'ruler',
       'remote',
       'loupe',
       'strainer',
+      'cassette',
     ],
-    weight: 1.25,
+    weight: 1.3,
   },
   {
     category: 'trash',
     keywords: [
       'diaper',
+      'band aid',
       'bandage',
       'swab',
       'sponge',
       'banana',
       'orange',
-      'apple',
       'lemon',
+      'strawberry',
+      'pineapple',
+      'apple',
+      'granny smith',
+      'fig',
       'pizza',
       'burrito',
-      'sandwich',
-      'burger',
+      'cheeseburger',
+      'hotdog',
+      'french loaf',
+      'bagel',
+      'pretzel',
+      'ice cream',
+      'ice lolly',
+      'guacamole',
+      'dough',
+      'meat loaf',
+      'potpie',
       'shoe',
+      'running shoe',
+      'sandal',
+      'clog',
       'sock',
       'broom',
       'mop',
       'wrapper',
       'trash',
     ],
-    weight: 1.1,
+    weight: 1.15,
   },
 ];
 
@@ -290,15 +337,14 @@ function scoreLabel(
 ): { category: TrashNetClass | null; score: number } {
   const lower = label.toLowerCase();
 
-  // Disambiguate shared bottle labels using visual material cues
   if (lower.includes('pop bottle') || lower.includes('water bottle')) {
     if (cues.metallicSheen > 0.45 && cues.polymerSaturated < 0.15) {
       return { category: 'metal', score: prob * 1.25 };
     }
     if (cues.glassTint > 0.35 && cues.polymerSaturated < 0.12) {
-      return { category: 'glass', score: prob * 1.2 };
+      return { category: 'glass', score: prob * 1.25 };
     }
-    return { category: 'plastic', score: prob * 1.4 };
+    return { category: 'plastic', score: prob * 1.45 };
   }
 
   let bestCat: TrashNetClass | null = null;
@@ -319,7 +365,7 @@ function scoreLabel(
   if (!bestCat) {
     return { category: null, score: 0 };
   }
-  return { category: bestCat, score: prob * (1 + Math.min(0.4, bestScore * 0.02)) };
+  return { category: bestCat, score: prob * (1 + Math.min(0.45, bestScore * 0.02)) };
 }
 
 function formatPrimaryLabel(rawClassName: string): string {
@@ -337,40 +383,60 @@ export async function classifyWithBrowserCnn(imageDataUrl: string): Promise<Clas
   });
 
   const cues = analyzeMaterialCues(img);
+  const centerCrop = createCenterCropCanvas(img, 0.72);
   const model = await getMobileNetModel();
-  const rawPreds = await model.classify(img, 15);
+
+  const [fullPreds, cropPreds] = await Promise.all([
+    model.classify(img, 15),
+    model.classify(centerCrop, 15),
+  ]);
 
   const scores = new Map<TrashNetClass, number>();
   for (const cls of TRASHNET_CLASSES) {
-    scores.set(cls, 0.01);
+    scores.set(cls, 0.008);
   }
 
   let matchedMass = 0;
-  for (const pred of rawPreds) {
-    const { category, score } = scoreLabel(pred.className, pred.probability, cues);
+  for (const pred of cropPreds) {
+    const { category, score } = scoreLabel(pred.className, pred.probability * 0.65, cues);
+    if (category) {
+      scores.set(category, (scores.get(category) || 0) + score);
+      matchedMass += score;
+    }
+  }
+  for (const pred of fullPreds) {
+    const { category, score } = scoreLabel(pred.className, pred.probability * 0.35, cues);
     if (category) {
       scores.set(category, (scores.get(category) || 0) + score);
       matchedMass += score;
     }
   }
 
-  // Incorporate material surface priors cleanly without overriding strong semantic hits
-  const priorScale = matchedMass < 0.25 ? 0.45 : 0.22;
+  const priorScale = matchedMass < 0.25 ? 0.48 : 0.24;
   scores.set('cardboard', (scores.get('cardboard') || 0) + cues.kraftBrown * priorScale);
   scores.set('paper', (scores.get('paper') || 0) + cues.brightPaper * priorScale * 0.7);
   scores.set('metal', (scores.get('metal') || 0) + cues.metallicSheen * priorScale);
   scores.set('glass', (scores.get('glass') || 0) + cues.glassTint * priorScale);
   scores.set('plastic', (scores.get('plastic') || 0) + cues.polymerSaturated * priorScale * 0.8);
 
-  const total = Array.from(scores.values()).reduce((sum, v) => sum + v, 0);
+  // Calibrated temperature sharpening for clearer confidence separation
+  const sharpened = new Map<TrashNetClass, number>();
+  let total = 0;
+  for (const cls of TRASHNET_CLASSES) {
+    const val = Math.pow(scores.get(cls) || 0.008, 1.25);
+    sharpened.set(cls, val);
+    total += val;
+  }
+
   const probabilities: ClassProbability[] = TRASHNET_CLASSES.map((category) => ({
     category,
-    probability: Number((((scores.get(category) || 0) / total) * 100).toFixed(1)),
+    probability: Number((((sharpened.get(category) || 0) / total) * 100).toFixed(1)),
   })).sort((a, b) => b.probability - a.probability);
 
   const top = probabilities[0];
   const meta = WASTE_CATEGORY_MAP[top.category];
-  const topLabel = rawPreds[0]?.className ? formatPrimaryLabel(rawPreds[0].className) : meta.label;
+  const leadPred = cropPreds[0] || fullPreds[0];
+  const topLabel = leadPred?.className ? formatPrimaryLabel(leadPred.className) : meta.label;
 
   return {
     predictedClass: top.category,

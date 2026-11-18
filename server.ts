@@ -320,7 +320,10 @@ async function startServer() {
   app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    const hasPython = Boolean(process.env.PYTHON_API_URL?.trim());
+    const geminiKey = process.env.GEMINI_API_KEY?.trim();
+    const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
+    res.json({ status: 'ok', serverClassifierReady: hasPython || hasGemini });
   });
 
   app.get('/api/history', (_req, res) => {

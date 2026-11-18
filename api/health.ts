@@ -8,5 +8,13 @@ interface ApiResponse {
 }
 
 export default function handler(_req: ApiRequest, res: ApiResponse) {
-  res.status(200).json({ status: 'ok', runtime: 'vercel' });
+  const hasPython = Boolean(process.env.PYTHON_API_URL?.trim());
+  const geminiKey = process.env.GEMINI_API_KEY?.trim();
+  const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
+
+  res.status(200).json({
+    status: 'ok',
+    runtime: 'vercel',
+    serverClassifierReady: hasPython || hasGemini,
+  });
 }
