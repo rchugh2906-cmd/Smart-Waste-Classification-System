@@ -1,0 +1,6 @@
+{
+  "name": "EcoSort Vision",
+  "description": "Smart waste classification workspace featuring image upload, live camera capture, 6-class TrashNet predictions, disposal guidance, and custom Python/Colab Keras CNN API integration.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
