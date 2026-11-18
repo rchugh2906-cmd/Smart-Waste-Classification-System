@@ -259,7 +259,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           parts: [
             { inlineData: { mimeType: resolvedMime, data: cleanBase64 } },
             {
-              text: 'Classify the primary waste item in this image into one of: cardboard, glass, metal, paper, plastic, trash. Return probabilities across all 6 classes summing to 100, a short item description, recyclability boolean, target bin name, 3 concise disposal steps, and 1 factual environmental note.',
+              text: [
+                'Classify the primary waste object into the exact TrashNet category:',
+                'cardboard (corrugated boxes, shipping cartons),',
+                'glass (glass bottles, glass jars),',
+                'metal (aluminum soda cans, steel food tins, foil),',
+                'paper (flat paper sheets, newspapers, magazines, envelopes, paper bags),',
+                'plastic (PET water bottles, plastic jugs, tubs, plastic caps/bags),',
+                'or trash (food-soiled wrappers, composite pouches, tissues, non-recyclable waste).',
+                'Return calibrated probabilities across all 6 classes summing to 100, a short item description, recyclability boolean, target bin name, 3 concise disposal steps, and 1 factual environmental note.',
+              ].join(' '),
             },
           ],
         },
