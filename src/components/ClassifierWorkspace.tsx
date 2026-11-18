@@ -3,7 +3,6 @@ import {
   AlertCircle,
   Camera,
   CheckCircle2,
-  Download,
   ImageIcon,
   Recycle,
   RefreshCw,
@@ -14,15 +13,10 @@ import {
 } from 'lucide-react';
 import { SAMPLE_WASTE_ITEMS, type SampleWasteItem } from '../data/sampleImages.ts';
 import { WASTE_CATEGORY_MAP } from '../data/wasteCategories.ts';
-import type {
-  ClassificationResult,
-  InferenceEngine,
-  InputSource,
-} from '../types/waste.ts';
+import type { ClassificationResult, InputSource } from '../types/waste.ts';
 import {
   captureVideoFrame,
   fileToPreparedImage,
-  formatBytes,
   urlToPreparedImage,
   type PreparedImage,
 } from '../utils/imageHelpers.ts';
@@ -30,9 +24,6 @@ import {
 interface ClassifierWorkspaceProps {
   mode: 'upload' | 'camera';
   onModeChange: (mode: 'upload' | 'camera') => void;
-  engine: InferenceEngine;
-  onEngineChange: (engine: InferenceEngine) => void;
-  customApiUrl: string;
   selectedImage: PreparedImage | null;
   selectedSource: InputSource;
   result: ClassificationResult | null;
@@ -46,9 +37,6 @@ interface ClassifierWorkspaceProps {
 export function ClassifierWorkspace({
   mode,
   onModeChange,
-  engine,
-  onEngineChange,
-  customApiUrl,
   selectedImage,
   selectedSource,
   result,
@@ -63,7 +51,7 @@ export function ClassifierWorkspace({
   const streamRef = useRef<MediaStream | null>(null);
 
   const [isDragging, setIsDragging] = useState(false);
-  const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [failedSampleIds, setFailedSampleIds] = useState<Record<string, boolean>>({});
   const [cameraStatus, setCameraStatus] = useState<'idle' | 'starting' | 'active' | 'error'>('idle');
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -87,7 +75,7 @@ export function ClassifierWorkspace({
     async (deviceId?: string) => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setCameraStatus('error');
-        setCameraError('Camera capture is not supported in this browser environment.');
+        setCameraError('Camera capture is unavailable in this browser.');
         return;
       }
 
@@ -126,9 +114,9 @@ export function ClassifierWorkspace({
         const message =
           err instanceof Error
             ? err.name === 'NotAllowedError'
-              ? 'Camera permission was denied. Allow camera access in browser settings or switch to Upload Image.'
+              ? 'Camera access was denied. Enable permission or upload an image.'
               : err.name === 'NotFoundError'
-                ? 'No camera device was detected on this machine. Use Upload Image instead.'
+                ? 'No camera device detected. Switch to Upload Image.'
                 : err.message
             : 'Unable to start camera stream.';
         setCameraError(message);
@@ -137,7 +125,6 @@ export function ClassifierWorkspace({
     [stopCameraStream]
   );
 
-  // Manage camera lifecycle when switching tabs or retaking
   useEffect(() => {
     if (mode === 'camera' && (!selectedImage || selectedSource !== 'camera')) {
       void startCameraStream(selectedDeviceId || undefined);
@@ -157,15 +144,15 @@ export function ClassifierWorkspace({
 
   const handleFile = async (file: File) => {
     if (!file.type.startsWith('image/')) {
-      setSampleLoadError('Please select a valid image file (JPEG, PNG, or WebP).');
+      setLocalError('Please select a valid JPEG, PNG, or WebP image.');
       return;
     }
-    setSampleLoadError(null);
+    setLocalError(null);
     try {
       const prepared = await fileToPreparedImage(file);
-      onImageSelected(prepared, 'upload', false);
+      onImageSelected(prepared, 'upload', true);
     } catch (err) {
-      setSampleLoadError(err instanceof Error ? err.message : 'Unable to process image file.');
+      setLocalError(err instanceof Error ? err.message : 'Unable to process image file.');
     }
   };
 
@@ -187,13 +174,13 @@ export function ClassifierWorkspace({
   };
 
   const handleSampleClick = async (sample: SampleWasteItem) => {
-    setSampleLoadError(null);
+    setLocalError(null);
     try {
       onModeChange('upload');
       const prepared = await urlToPreparedImage(sample.imageUrl, `${sample.id}.jpg`);
       onImageSelected(prepared, 'sample', true);
     } catch (err) {
-      setSampleLoadError(err instanceof Error ? err.message : 'Unable to load sample image.');
+      setLocalError(err instanceof Error ? err.message : 'Unable to load sample image.');
     }
   };
 
@@ -209,38 +196,20 @@ export function ClassifierWorkspace({
     void startCameraStream(selectedDeviceId || undefined);
   };
 
-  const handleDownloadJsonReport = () => {
-    if (!result || !selectedImage) return;
-    const payload = {
-      timestamp: new Date().toISOString(),
-      image: {
-        fileName: selectedImage.fileName,
-        dimensions: `${selectedImage.width}x${selectedImage.height}`,
-        source: selectedSource,
-      },
-      classification: result,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `waste-classification-${result.predictedClass}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const topMeta = result ? WASTE_CATEGORY_MAP[result.predictedClass] : null;
-  const customReady = customApiUrl.trim().length > 0;
 
   return (
-    <section id="classifier" className="mx-auto max-w-6xl px-6 py-10">
+    <section id="classifier" className="mx-auto max-w-6xl px-6 py-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">
-            Waste Classification Workspace
-          </h2>
+          <h1
+            className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl"
+            style={{ textWrap: 'balance' }}
+          >
+            Smart Waste Classification
+          </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Upload a waste photograph or capture a live camera frame to classify into TrashNet categories.
+            Upload a waste image or capture from your camera to identify material category and disposal bin.
           </p>
         </div>
 
@@ -286,45 +255,39 @@ export function ClassifierWorkspace({
           <div>
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <span className="text-sm font-semibold text-slate-900">
-                {mode === 'upload' ? 'Image Input & Preview' : 'Live Camera Capture'}
+                {mode === 'upload' ? 'Image Input' : 'Camera Capture'}
               </span>
               {selectedImage && (
-                <span className="font-mono text-xs tabular-nums text-slate-500">
-                  {selectedImage.width} × {selectedImage.height} px · {formatBytes(selectedImage.sizeBytes)}
-                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    mode === 'camera' ? handleRetake() : fileInputRef.current?.click()
+                  }
+                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  {mode === 'camera' ? 'Retake Photo' : 'Replace Image'}
+                </button>
               )}
             </div>
 
             {mode === 'upload' ? (
               <div className="mt-4">
                 {selectedImage ? (
-                  <div className="space-y-3">
-                    <div className="relative aspect-4/3 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
-                      <img
-                        src={selectedImage.dataUrl}
-                        alt={selectedImage.fileName}
-                        referrerPolicy="no-referrer"
-                        className="h-full w-full object-contain"
-                      />
-                      <button
-                        type="button"
-                        onClick={onClearImage}
-                        aria-label="Remove selected image"
-                        className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white/95 text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 cursor-pointer"
-                      >
-                        <X className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between text-xs text-slate-600">
-                      <span className="truncate font-mono max-w-[240px]">{selectedImage.fileName}</span>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="font-semibold text-emerald-700 hover:text-emerald-800 hover:underline cursor-pointer whitespace-nowrap shrink-0"
-                      >
-                        Choose Different File
-                      </button>
-                    </div>
+                  <div className="relative aspect-4/3 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                    <img
+                      src={selectedImage.dataUrl}
+                      alt={selectedImage.fileName}
+                      referrerPolicy="no-referrer"
+                      className="h-full w-full object-contain"
+                    />
+                    <button
+                      type="button"
+                      onClick={onClearImage}
+                      aria-label="Remove selected image"
+                      className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white/95 text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 cursor-pointer"
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                    </button>
                   </div>
                 ) : (
                   <div
@@ -345,7 +308,7 @@ export function ClassifierWorkspace({
                       Drop a waste photograph here
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      Supports JPEG, PNG, or WebP up to 15 MB
+                      JPEG, PNG, or WebP
                     </p>
                     <button
                       type="button"
@@ -365,20 +328,17 @@ export function ClassifierWorkspace({
                   className="hidden"
                 />
 
-                {sampleLoadError && (
+                {localError && (
                   <p role="alert" className="mt-3 text-xs font-medium text-rose-700">
-                    {sampleLoadError}
+                    {localError}
                   </p>
                 )}
 
                 <div className="mt-5 border-t border-slate-200 pt-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-700">
-                      Sample Test Photographs
-                    </span>
-                    <span className="text-xs text-slate-500">Click to load &amp; classify</span>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <span className="text-xs font-semibold text-slate-700">
+                    Sample Waste Items
+                  </span>
+                  <div className="mt-2.5 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     {SAMPLE_WASTE_ITEMS.map((sample) => (
                       <button
                         key={sample.id}
@@ -390,7 +350,9 @@ export function ClassifierWorkspace({
                           {failedSampleIds[sample.id] ? (
                             <div className="flex h-full w-full flex-col items-center justify-center bg-slate-100 p-2 text-slate-500">
                               <ImageIcon className="h-5 w-5" aria-hidden="true" />
-                              <span className="mt-1 text-[11px] font-medium">{sample.expectedClass}</span>
+                              <span className="mt-1 text-[11px] font-medium capitalize">
+                                {sample.expectedClass}
+                              </span>
                             </div>
                           ) : (
                             <img
@@ -408,9 +370,6 @@ export function ClassifierWorkspace({
                           <p className="truncate text-xs font-medium text-slate-800">
                             {sample.title}
                           </p>
-                          <p className="text-[11px] capitalize text-slate-500">
-                            {sample.expectedClass}
-                          </p>
                         </div>
                       </button>
                     ))}
@@ -418,30 +377,15 @@ export function ClassifierWorkspace({
                 </div>
               </div>
             ) : (
-              <div className="mt-4 space-y-4">
+              <div className="mt-4 space-y-3">
                 {selectedImage && selectedSource === 'camera' ? (
-                  <div className="space-y-3">
-                    <div className="relative aspect-4/3 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
-                      <img
-                        src={selectedImage.dataUrl}
-                        alt="Captured waste frame"
-                        referrerPolicy="no-referrer"
-                        className="h-full w-full object-contain"
-                      />
-                    </div>
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <span className="font-mono text-xs text-slate-500">
-                        Captured frame · {selectedImage.fileName}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleRetake}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 transition-colors hover:bg-slate-50 cursor-pointer whitespace-nowrap shrink-0"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                        Retake Photo
-                      </button>
-                    </div>
+                  <div className="relative aspect-4/3 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+                    <img
+                      src={selectedImage.dataUrl}
+                      alt="Captured waste frame"
+                      referrerPolicy="no-referrer"
+                      className="h-full w-full object-contain"
+                    />
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -463,7 +407,7 @@ export function ClassifierWorkspace({
 
                       {cameraStatus === 'starting' && (
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 text-xs font-medium text-white">
-                          Initializing camera feed...
+                          Starting camera...
                         </div>
                       )}
 
@@ -486,7 +430,7 @@ export function ClassifierWorkspace({
                               onClick={() => onModeChange('upload')}
                               className="rounded-lg border border-slate-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 cursor-pointer"
                             >
-                              Switch to Upload
+                              Upload Image Instead
                             </button>
                           </div>
                         </div>
@@ -509,7 +453,7 @@ export function ClassifierWorkspace({
                         </select>
                       ) : (
                         <span className="text-xs text-slate-500">
-                          Center the waste item inside the frame
+                          Position item inside the frame
                         </span>
                       )}
 
@@ -529,37 +473,21 @@ export function ClassifierWorkspace({
             )}
           </div>
 
-          {/* Engine Selector + Run CTA */}
-          <div className="mt-6 border-t border-slate-200 pt-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-100 p-1">
+          {selectedImage && (
+            <div className="mt-5 flex items-center justify-end gap-3 border-t border-slate-200 pt-4">
+              {mode === 'camera' && (
                 <button
                   type="button"
-                  onClick={() => onEngineChange('builtin')}
-                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    engine === 'builtin'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  onClick={handleRetake}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-800 transition-colors hover:bg-slate-50 cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  Built-in Vision
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  Retake
                 </button>
-                <button
-                  type="button"
-                  onClick={() => onEngineChange('custom-python')}
-                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    engine === 'custom-python'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Python Keras API
-                </button>
-              </div>
-
+              )}
               <button
                 type="button"
-                disabled={!selectedImage || isClassifying}
+                disabled={isClassifying}
                 onClick={onRunClassification}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-5 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 cursor-pointer whitespace-nowrap shrink-0"
               >
@@ -567,40 +495,19 @@ export function ClassifierWorkspace({
                   className={`h-3.5 w-3.5 ${isClassifying ? 'animate-spin' : ''}`}
                   aria-hidden="true"
                 />
-                {isClassifying ? 'Classifying...' : 'Run Classification'}
+                {isClassifying ? 'Classifying...' : 'Classify Waste'}
               </button>
             </div>
-
-            {engine === 'custom-python' && (
-              <p className="mt-2 text-xs text-slate-500">
-                {customReady ? (
-                  <>
-                    Routing to <span className="font-mono text-slate-700">{customApiUrl}</span>
-                  </>
-                ) : (
-                  <>
-                    No Python API URL configured yet.{' '}
-                    <a href="#colab-api" className="font-semibold text-emerald-700 hover:underline">
-                      Configure Colab endpoint below
-                    </a>
-                    .
-                  </>
-                )}
-              </p>
-            )}
-          </div>
+          )}
         </div>
 
         {/* Right Pane: Prediction Results */}
         <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 lg:col-span-6">
           <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-            <span className="text-sm font-semibold text-slate-900">
-              Prediction Results &amp; Disposal Guidance
-            </span>
+            <span className="text-sm font-semibold text-slate-900">Prediction Results</span>
             {result && (
               <span className="font-mono text-xs tabular-nums text-slate-500">
-                {result.engine === 'custom-python' ? 'Keras CNN API' : 'Vision Model'} ·{' '}
-                {result.latencyMs} ms
+                {result.recyclable ? 'Recyclable Stream' : 'Landfill Stream'}
               </span>
             )}
           </div>
@@ -642,7 +549,7 @@ export function ClassifierWorkspace({
                   onClick={onRunClassification}
                   className="mt-4 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 cursor-pointer"
                 >
-                  Retry Classification
+                  Retry
                 </button>
               )}
             </div>
@@ -651,22 +558,20 @@ export function ClassifierWorkspace({
               <div>
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
-                    <p className="text-xs font-medium text-slate-500">
-                      Detected: {result.detectedItem}
-                    </p>
-                    <h3 className="mt-1 text-3xl font-bold tracking-tight text-slate-900">
+                    <p className="text-xs font-medium text-slate-500">{result.detectedItem}</p>
+                    <h2 className="mt-1 text-3xl font-bold tracking-tight text-slate-900">
                       {topMeta.label}
-                    </h3>
+                    </h2>
                     <div className="mt-2 flex items-center gap-2 text-xs font-semibold">
                       {result.recyclable ? (
                         <span className="inline-flex items-center gap-1.5 text-emerald-700">
                           <Recycle className="h-4 w-4" aria-hidden="true" />
-                          Recyclable · {result.binCategory}
+                          {result.binCategory}
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-rose-700">
                           <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          Non-Recyclable · {result.binCategory}
+                          {result.binCategory}
                         </span>
                       )}
                     </div>
@@ -680,14 +585,10 @@ export function ClassifierWorkspace({
                   </div>
                 </div>
 
-                {/* 6-Class Probability Distribution */}
                 <div className="mt-6 border-t border-slate-200 pt-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-700">
-                      TrashNet Class Probabilities
-                    </span>
-                    <span className="font-mono text-[11px] text-slate-500">6 Classes</span>
-                  </div>
+                  <span className="mb-3 block text-xs font-semibold text-slate-700">
+                    Category Probabilities
+                  </span>
                   <div className="space-y-2.5">
                     {result.probabilities.map((item, idx) => {
                       const clsMeta = WASTE_CATEGORY_MAP[item.category];
@@ -724,14 +625,16 @@ export function ClassifierWorkspace({
                   </div>
                 </div>
 
-                {/* Disposal Recommendations */}
                 <div className="mt-6 border-t border-slate-200 pt-4">
-                  <h4 className="text-xs font-semibold text-slate-700">
+                  <h3 className="text-xs font-semibold text-slate-700">
                     Disposal Recommendations
-                  </h4>
-                  <ol className="mt-2.5 space-y-2">
+                  </h3>
+                  <ul className="mt-2.5 space-y-2">
                     {result.disposalRecommendations.map((step, i) => (
-                      <li key={i} className="flex items-start gap-2.5 text-xs leading-relaxed text-slate-700">
+                      <li
+                        key={i}
+                        className="flex items-start gap-2.5 text-xs leading-relaxed text-slate-700"
+                      >
                         <CheckCircle2
                           className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-700"
                           aria-hidden="true"
@@ -739,34 +642,20 @@ export function ClassifierWorkspace({
                         <span>{step}</span>
                       </li>
                     ))}
-                  </ol>
+                  </ul>
                   <p className="mt-3 text-xs leading-relaxed text-slate-500">
                     {result.environmentalNote}
                   </p>
                 </div>
               </div>
-
-              <div className="flex items-center justify-between border-t border-slate-200 pt-4">
-                <span className="text-xs text-slate-500">Saved automatically to session log</span>
-                <button
-                  type="button"
-                  onClick={handleDownloadJsonReport}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 transition-colors hover:bg-slate-50 cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                  Export JSON
-                </button>
-              </div>
             </div>
           ) : (
             <div className="my-auto flex flex-col items-center justify-center py-12 text-center">
               <Recycle className="h-9 w-9 text-slate-300" aria-hidden="true" />
-              <p className="mt-3 text-sm font-semibold text-slate-900">
-                Awaiting Waste Sample
-              </p>
+              <p className="mt-3 text-sm font-semibold text-slate-900">Ready to Classify</p>
               <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-slate-500">
-                Upload a waste photograph, pick one of the studio test samples on the left, or
-                capture a frame using your camera to view category confidence and disposal guidance.
+                Upload a photograph, choose a sample waste item, or capture a live camera frame to
+                view category confidence and disposal recommendations.
               </p>
             </div>
           )}

@@ -7,7 +7,7 @@ export function TopNav({ onStartScan }: TopNavProps) {
     <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-sm">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-8 px-6 py-3.5">
         <a
-          href="#overview"
+          href="#classifier"
           className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 rounded"
         >
           EcoSort Vision
@@ -17,12 +17,6 @@ export function TopNav({ onStartScan }: TopNavProps) {
           aria-label="Primary navigation"
           className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600"
         >
-          <a
-            href="#overview"
-            className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
-          >
-            Overview
-          </a>
           <a
             href="#classifier"
             className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
@@ -34,12 +28,6 @@ export function TopNav({ onStartScan }: TopNavProps) {
             className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
           >
             History
-          </a>
-          <a
-            href="#colab-api"
-            className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
-          >
-            Colab API
           </a>
         </nav>
 

@@ -6,8 +6,6 @@ export type TrashNetClass =
   | 'plastic'
   | 'trash';
 
-export type InferenceEngine = 'builtin' | 'custom-python';
-
 export type InputSource = 'upload' | 'camera' | 'sample';
 
 export interface ClassProbability {
@@ -24,8 +22,6 @@ export interface ClassificationResult {
   binCategory: string;
   disposalRecommendations: string[];
   environmentalNote: string;
-  engine: InferenceEngine;
-  latencyMs: number;
 }
 
 export interface ClassificationHistoryEntry {

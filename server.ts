@@ -7,7 +7,9 @@ import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { TRASHNET_CLASSES, WASTE_CATEGORY_MAP } from './src/data/wasteCategories.ts';
 import type {
   ClassProbability,
+  ClassificationHistoryEntry,
   ClassificationResult,
+  InputSource,
   TrashNetClass,
 } from './src/types/waste.ts';
 
@@ -16,6 +18,31 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
+const DATA_DIR = path.resolve(__dirname, '.data');
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+function readHistory(): ClassificationHistoryEntry[] {
+  try {
+    ensureDataDir();
+    if (!fs.existsSync(HISTORY_FILE)) return [];
+    const raw = fs.readFileSync(HISTORY_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHistory(entries: ClassificationHistoryEntry[]) {
+  ensureDataDir();
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(entries.slice(0, 60), null, 2), 'utf8');
+}
 
 function normalizeClassLabel(rawLabel: string): TrashNetClass {
   const lower = String(rawLabel || '').trim().toLowerCase();
@@ -60,29 +87,24 @@ function normalizeProbabilities(
 
   if (sum <= 0) {
     const clamped = Math.min(99.5, Math.max(50, fallbackConfidence));
-    const remainder = Number(((100 - clamped) / (TRASHNET_CLASSES.length - 1)).toFixed(2));
+    const remainder = Number(((100 - clamped) / (TRASHNET_CLASSES.length - 1)).toFixed(1));
     return TRASHNET_CLASSES.map((category) => ({
       category,
       probability: category === predictedClass ? clamped : remainder,
     })).sort((a, b) => b.probability - a.probability);
   }
 
-  // Handle 0..1 vs 0..100 scale
   const scale = sum <= 1.5 ? 100 : 100 / sum;
-  const normalized = TRASHNET_CLASSES.map((category) => ({
+  return TRASHNET_CLASSES.map((category) => ({
     category,
     probability: Number(((map.get(category) || 0) * scale).toFixed(1)),
   })).sort((a, b) => b.probability - a.probability);
-
-  return normalized;
 }
 
 function createGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error(
-      'GEMINI_API_KEY is not configured. Add a valid key in Settings > Secrets or connect a custom Python CNN endpoint.'
-    );
+    throw new Error('Server classification key is not configured.');
   }
   return new GoogleGenAI({
     apiKey,
@@ -97,7 +119,7 @@ function createGeminiClient(): GoogleGenAI {
 async function classifyWithGemini(
   base64Data: string,
   mimeType: string
-): Promise<Omit<ClassificationResult, 'engine' | 'latencyMs'>> {
+): Promise<ClassificationResult> {
   const ai = createGeminiClient();
 
   const imagePart = {
@@ -109,17 +131,16 @@ async function classifyWithGemini(
 
   const textPart = {
     text: [
-      'Classify the primary waste object in this image into one of the six TrashNet CNN dataset classes: cardboard, glass, metal, paper, plastic, or trash.',
-      'Provide calibrated probability percentages across all 6 classes that sum to 100.',
-      'Identify the visible waste item concisely, specify whether it is recyclable, recommend the target disposal bin, provide 3 practical preparation/disposal steps, and give 1 factual environmental impact note.',
+      'Classify the primary waste item in this image into one of: cardboard, glass, metal, paper, plastic, trash.',
+      'Return probabilities across all 6 classes summing to 100, a short item description, recyclability boolean, target bin name, 3 concise disposal steps, and 1 factual environmental note.',
     ].join(' '),
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: 'gemini-3.1-flash-lite',
     contents: { parts: [imagePart, textPart] },
     config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
@@ -127,15 +148,12 @@ async function classifyWithGemini(
           predictedClass: {
             type: Type.STRING,
             enum: ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash'],
-            description: 'Top predicted TrashNet waste category.',
           },
           confidence: {
             type: Type.NUMBER,
-            description: 'Confidence percentage from 0 to 100 for the predicted class.',
           },
           probabilities: {
             type: Type.ARRAY,
-            description: 'Probability breakdown across all 6 TrashNet categories summing to 100.',
             items: {
               type: Type.OBJECT,
               properties: {
@@ -152,24 +170,19 @@ async function classifyWithGemini(
           },
           detectedItem: {
             type: Type.STRING,
-            description: 'Short description of the item visible in the photo.',
           },
           recyclable: {
             type: Type.BOOLEAN,
-            description: 'Whether this waste item belongs in a recycling stream.',
           },
           binCategory: {
             type: Type.STRING,
-            description: 'Target collection bin name, e.g. Blue Plastic Container Recycling.',
           },
           disposalRecommendations: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
-            description: 'Exactly 3 practical preparation and disposal steps.',
           },
           environmentalNote: {
             type: Type.STRING,
-            description: 'One concise factual sentence about material recovery or contamination.',
           },
         },
         required: [
@@ -207,24 +220,17 @@ async function classifyWithGemini(
     binCategory: parsed.binCategory || meta.binName,
     disposalRecommendations:
       Array.isArray(parsed.disposalRecommendations) && parsed.disposalRecommendations.length > 0
-        ? parsed.disposalRecommendations.slice(0, 4)
+        ? parsed.disposalRecommendations.slice(0, 3)
         : meta.defaultRecommendations,
     environmentalNote: parsed.environmentalNote || meta.environmentalNote,
   };
 }
 
-async function classifyWithCustomPythonApi(
-  customApiUrl: string,
+async function classifyWithPythonApi(
+  pythonApiUrl: string,
   base64Data: string,
   mimeType: string
-): Promise<Omit<ClassificationResult, 'engine' | 'latencyMs'>> {
-  let targetUrl: URL;
-  try {
-    targetUrl = new URL(customApiUrl.trim());
-  } catch {
-    throw new Error('Invalid custom Python API URL. Provide a full http:// or https:// endpoint.');
-  }
-
+): Promise<ClassificationResult> {
   const buffer = Buffer.from(base64Data, 'base64');
   const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
   const blob = new Blob([buffer], { type: mimeType });
@@ -235,7 +241,7 @@ async function classifyWithCustomPythonApi(
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const res = await fetch(targetUrl.toString(), {
+    const res = await fetch(pythonApiUrl, {
       method: 'POST',
       headers: {
         'ngrok-skip-browser-warning': 'true',
@@ -245,19 +251,14 @@ async function classifyWithCustomPythonApi(
     });
 
     if (!res.ok) {
-      const errorText = await res.text().catch(() => '');
-      throw new Error(
-        `Python API returned HTTP ${res.status}${errorText ? `: ${errorText.slice(0, 160)}` : ''}`
-      );
+      throw new Error(`Model API returned HTTP ${res.status}`);
     }
 
     const data = await res.json();
     const rawClass =
       data.predictedClass || data.prediction || data.class || data.label || data.category;
     if (!rawClass) {
-      throw new Error(
-        'Python API response did not include a recognized class field (predictedClass, prediction, class, or label).'
-      );
+      throw new Error('Model API response is missing a predicted class.');
     }
 
     const predictedClass = normalizeClassLabel(String(rawClass));
@@ -274,19 +275,20 @@ async function classifyWithCustomPythonApi(
       rawProbs,
       rawConfidence || 90
     );
-    const finalConfidence = rawConfidence > 0 ? Number(rawConfidence.toFixed(1)) : probabilities[0].probability;
+    const finalConfidence =
+      rawConfidence > 0 ? Number(rawConfidence.toFixed(1)) : probabilities[0].probability;
 
     return {
       predictedClass,
       confidence: finalConfidence,
       probabilities,
-      detectedItem: data.detectedItem || `${meta.label} specimen (Keras CNN)`,
+      detectedItem: data.detectedItem || `${meta.label} waste item`,
       recyclable:
         typeof data.recyclable === 'boolean' ? data.recyclable : meta.recyclable,
       binCategory: data.binCategory || meta.binName,
       disposalRecommendations:
         Array.isArray(data.disposalRecommendations) && data.disposalRecommendations.length > 0
-          ? data.disposalRecommendations
+          ? data.disposalRecommendations.slice(0, 3)
           : meta.defaultRecommendations,
       environmentalNote: data.environmentalNote || meta.environmentalNote,
     };
@@ -297,68 +299,33 @@ async function classifyWithCustomPythonApi(
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '20mb' }));
+  app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
 
-  app.post('/api/test-endpoint', async (req, res) => {
-    const rawUrl = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
-    if (!rawUrl) {
-      res.status(400).json({ ok: false, error: 'Please provide an endpoint URL to verify.' });
-      return;
-    }
+  app.get('/api/history', (_req, res) => {
+    res.json(readHistory());
+  });
 
-    let parsed: URL;
-    try {
-      parsed = new URL(rawUrl);
-    } catch {
-      res.status(400).json({ ok: false, error: 'URL must start with http:// or https://' });
-      return;
-    }
+  app.delete('/api/history/:id', (req, res) => {
+    const id = req.params.id;
+    const updated = readHistory().filter((entry) => entry.id !== id);
+    writeHistory(updated);
+    res.json(updated);
+  });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    try {
-      const originHealth = `${parsed.origin}/health`;
-      const probe = await fetch(originHealth, {
-        method: 'GET',
-        headers: { 'ngrok-skip-browser-warning': 'true' },
-        signal: controller.signal,
-      }).catch(() =>
-        fetch(parsed.toString(), {
-          method: 'OPTIONS',
-          headers: { 'ngrok-skip-browser-warning': 'true' },
-          signal: controller.signal,
-        })
-      );
-
-      res.json({
-        ok: probe.status < 500,
-        status: probe.status,
-        message:
-          probe.status < 500
-            ? `Reachable (HTTP ${probe.status})`
-            : `Server responded with HTTP ${probe.status}`,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Connection failed';
-      res.status(502).json({
-        ok: false,
-        error: `Could not reach ${parsed.origin}: ${msg}`,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+  app.delete('/api/history', (_req, res) => {
+    writeHistory([]);
+    res.json([]);
   });
 
   app.post('/api/classify', async (req, res) => {
-    const start = Date.now();
     try {
-      const { imageBase64, mimeType, customApiUrl } = req.body ?? {};
+      const { imageBase64, mimeType, source, imageName, thumbnailDataUrl } = req.body ?? {};
       if (!imageBase64 || typeof imageBase64 !== 'string') {
-        res.status(400).json({ error: 'Image payload is required.' });
+        res.status(400).json({ error: 'Image data is required.' });
         return;
       }
 
@@ -366,36 +333,35 @@ async function startServer() {
       const resolvedMime = dataUrlMatch?.[1] || mimeType || 'image/jpeg';
       const cleanBase64 = dataUrlMatch?.[2] || imageBase64;
 
-      if (customApiUrl && typeof customApiUrl === 'string' && customApiUrl.trim().length > 0) {
-        const result = await classifyWithCustomPythonApi(
-          customApiUrl,
-          cleanBase64,
-          resolvedMime
-        );
-        res.json({
-          ...result,
-          engine: 'custom-python',
-          latencyMs: Date.now() - start,
-        } satisfies ClassificationResult);
-        return;
-      }
+      const configuredPythonUrl = process.env.PYTHON_API_URL?.trim();
+      const result = configuredPythonUrl
+        ? await classifyWithPythonApi(configuredPythonUrl, cleanBase64, resolvedMime)
+        : await classifyWithGemini(cleanBase64, resolvedMime);
 
-      const result = await classifyWithGemini(cleanBase64, resolvedMime);
-      res.json({
-        ...result,
-        engine: 'builtin',
-        latencyMs: Date.now() - start,
-      } satisfies ClassificationResult);
+      const validSource: InputSource =
+        source === 'camera' || source === 'sample' ? source : 'upload';
+
+      const entry: ClassificationHistoryEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: new Date().toISOString(),
+        source: validSource,
+        imageName: typeof imageName === 'string' && imageName ? imageName : 'waste-sample.jpg',
+        thumbnailDataUrl:
+          typeof thumbnailDataUrl === 'string' && thumbnailDataUrl
+            ? thumbnailDataUrl
+            : `data:${resolvedMime};base64,${cleanBase64}`,
+        result,
+      };
+
+      const history = [entry, ...readHistory()].slice(0, 60);
+      writeHistory(history);
+
+      res.json({ result, entry });
     } catch (err) {
       console.error('Classification error:', err);
       const message =
-        err instanceof Error ? err.message : 'Unable to classify image at this time.';
-      const status = message.includes('GEMINI_API_KEY')
-        ? 500
-        : message.includes('Python API')
-          ? 502
-          : 500;
-      res.status(status).json({ error: message });
+        err instanceof Error ? err.message : 'Unable to classify waste image.';
+      res.status(500).json({ error: message });
     }
   });
 
