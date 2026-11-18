@@ -19,19 +19,27 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
 const DATA_DIR = path.resolve(__dirname, '.data');
-const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const FALLBACK_DIR = path.join('/tmp', 'ecosort-data');
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+function getHistoryFile(): string {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    return path.join(DATA_DIR, 'history.json');
+  } catch {
+    if (!fs.existsSync(FALLBACK_DIR)) {
+      fs.mkdirSync(FALLBACK_DIR, { recursive: true });
+    }
+    return path.join(FALLBACK_DIR, 'history.json');
   }
 }
 
 function readHistory(): ClassificationHistoryEntry[] {
   try {
-    ensureDataDir();
-    if (!fs.existsSync(HISTORY_FILE)) return [];
-    const raw = fs.readFileSync(HISTORY_FILE, 'utf8');
+    const file = getHistoryFile();
+    if (!fs.existsSync(file)) return [];
+    const raw = fs.readFileSync(file, 'utf8');
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -40,8 +48,12 @@ function readHistory(): ClassificationHistoryEntry[] {
 }
 
 function writeHistory(entries: ClassificationHistoryEntry[]) {
-  ensureDataDir();
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(entries.slice(0, 60), null, 2), 'utf8');
+  try {
+    const file = getHistoryFile();
+    fs.writeFileSync(file, JSON.stringify(entries.slice(0, 60), null, 2), 'utf8');
+  } catch {
+    // Ignore storage write error
+  }
 }
 
 function normalizeClassLabel(rawLabel: string): TrashNetClass {
@@ -316,7 +328,14 @@ async function startServer() {
     res.json(updated);
   });
 
-  app.delete('/api/history', (_req, res) => {
+  app.delete('/api/history', (req, res) => {
+    const id = typeof req.query.id === 'string' ? req.query.id : '';
+    if (id) {
+      const updated = readHistory().filter((entry) => entry.id !== id);
+      writeHistory(updated);
+      res.json(updated);
+      return;
+    }
     writeHistory([]);
     res.json([]);
   });

@@ -9,6 +9,52 @@ import type {
 } from './types/waste.ts';
 import type { PreparedImage } from './utils/imageHelpers.ts';
 
+const LOCAL_HISTORY_KEY = 'ecosort_history_cache_v1';
+
+function readLocalHistory(): ClassificationHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalHistory(entries: ClassificationHistoryEntry[]) {
+  try {
+    localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(entries.slice(0, 60)));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function mergeHistory(
+  serverRows: ClassificationHistoryEntry[],
+  localRows: ClassificationHistoryEntry[]
+): ClassificationHistoryEntry[] {
+  const byId = new Map<string, ClassificationHistoryEntry>();
+  for (const row of [...serverRows, ...localRows]) {
+    if (row && typeof row.id === 'string' && !byId.has(row.id)) {
+      byId.set(row.id, row);
+    }
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, 60);
+}
+
+async function parseApiJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const snippet = text.replace(/<[^>]+>/g, ' ').trim().slice(0, 140);
+    throw new Error(snippet || `Server returned HTTP ${res.status}`);
+  }
+}
+
 export default function App() {
   const [mode, setMode] = useState<'upload' | 'camera'>('upload');
   const [selectedImage, setSelectedImage] = useState<PreparedImage | null>(null);
@@ -16,20 +62,24 @@ export default function App() {
   const [result, setResult] = useState<ClassificationResult | null>(null);
   const [isClassifying, setIsClassifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<ClassificationHistoryEntry[]>([]);
+  const [history, setHistory] = useState<ClassificationHistoryEntry[]>(readLocalHistory);
   const [historyLoading, setHistoryLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
     fetch('/api/history')
-      .then((res) => (res.ok ? res.json() : []))
-      .then((rows) => {
-        if (active && Array.isArray(rows)) {
-          setHistory(rows);
+      .then(async (res) => (res.ok ? parseApiJson<ClassificationHistoryEntry[]>(res) : []))
+      .then((serverRows) => {
+        if (active && Array.isArray(serverRows)) {
+          setHistory((prev) => {
+            const merged = mergeHistory(serverRows, prev);
+            writeLocalHistory(merged);
+            return merged;
+          });
         }
       })
       .catch(() => {
-        // Keep empty list if history fetch fails
+        // Retain local history cache if backend history endpoint is warming up
       })
       .finally(() => {
         if (active) setHistoryLoading(false);
@@ -56,14 +106,23 @@ export default function App() {
         }),
       });
 
-      const payload = await res.json();
-      if (!res.ok) {
+      const payload = await parseApiJson<{
+        result?: ClassificationResult;
+        entry?: ClassificationHistoryEntry;
+        error?: string;
+      }>(res);
+
+      if (!res.ok || !payload.result) {
         throw new Error(payload?.error || `Classification failed (HTTP ${res.status})`);
       }
 
-      setResult(payload.result as ClassificationResult);
+      setResult(payload.result);
       if (payload.entry) {
-        setHistory((prev) => [payload.entry as ClassificationHistoryEntry, ...prev].slice(0, 60));
+        setHistory((prev) => {
+          const next = [payload.entry!, ...prev].slice(0, 60);
+          writeLocalHistory(next);
+          return next;
+        });
       }
     } catch (err) {
       setResult(null);
@@ -118,12 +177,17 @@ export default function App() {
   };
 
   const handleDeleteEntry = async (id: string) => {
-    setHistory((prev) => prev.filter((item) => item.id !== id));
-    await fetch(`/api/history/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+    setHistory((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      writeLocalHistory(next);
+      return next;
+    });
+    await fetch(`/api/history?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   };
 
   const handleClearHistory = async () => {
     setHistory([]);
+    writeLocalHistory([]);
     await fetch('/api/history', { method: 'DELETE' }).catch(() => {});
   };
 
